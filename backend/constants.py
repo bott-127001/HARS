@@ -1,6 +1,11 @@
 INDEX_KEY = "NSE_INDEX|Nifty 50"
 VIX_KEY = "NSE_INDEX|India VIX"
 
+# NSE renames (bootstrap symbol -> Upstox trading_symbol)
+TRADING_SYMBOL_ALIASES: dict[str, str] = {
+    "TATAMOTORS": "TMPV",
+}
+
 BOOTSTRAP_NIFTY50 = [
     "ADANIENT",
     "ADANIPORTS",

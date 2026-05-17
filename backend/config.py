@@ -17,7 +17,7 @@ class Settings:
     mongodb_db_name: str = "hars_dashboard"
     upstox_api_base: str = "https://api.upstox.com"
     upstox_instruments_json_gz_url: str = (
-        "https://assets.upstox.com/market/instruments/json/full/final/full_instruments.json.gz"
+        "https://assets.upstox.com/market-quote/instruments/exchange/complete.json.gz"
     )
 
 
@@ -32,7 +32,7 @@ def load_settings() -> Settings:
         upstox_api_base=_env("UPSTOX_API_BASE", "https://api.upstox.com").rstrip("/"),
         upstox_instruments_json_gz_url=_env(
             "UPSTOX_INSTRUMENTS_JSON_GZ_URL",
-            "https://assets.upstox.com/market/instruments/json/full/final/full_instruments.json.gz",
+            "https://assets.upstox.com/market-quote/instruments/exchange/complete.json.gz",
         ),
     )
 

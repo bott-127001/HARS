@@ -15,7 +15,7 @@ import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from backend import db
-from backend.constants import BOOTSTRAP_NIFTY50, INDEX_KEY, VIX_KEY
+from backend.constants import BOOTSTRAP_NIFTY50, INDEX_KEY, TRADING_SYMBOL_ALIASES, VIX_KEY
 from backend.data_manager import _parse_candles_to_df, mgr, trim_df
 from backend.market_time import (
     candlescan_fire_valid,
@@ -101,15 +101,15 @@ async def instruments_refresh() -> None:
         log.warning("instruments download failed: %s", exc)
         return
 
-    want = set(BOOTSTRAP_NIFTY50)
-    by_sym: dict[str, str] = {}
-
-    for row in payload:
-        tsym = row.get("tradingsymbol") or row.get("trading_symbol")
-        ik = row.get("instrument_key")
-        if not tsym or not ik or tsym not in want:
-            continue
-        by_sym[tsym] = ik
+    by_sym = upstox_client.build_nifty50_equity_key_map(
+        payload,
+        BOOTSTRAP_NIFTY50,
+        TRADING_SYMBOL_ALIASES,
+    )
+    missing = [s for s in BOOTSTRAP_NIFTY50 if s not in by_sym]
+    if missing:
+        log.warning("instruments refresh: no Upstox key for %s", ", ".join(missing))
+    log.info("instruments refresh: resolved %s/%s symbols", len(by_sym), len(BOOTSTRAP_NIFTY50))
 
     coll = db.get_db()["instruments"]
     today = datetime.now(IST).date().isoformat()

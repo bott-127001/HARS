@@ -57,6 +57,9 @@ async def _warmup_bootstrap_cache() -> None:
 
         sym = s["symbol"]
         ik = s["instrument_key"]
+        if "BOOTSTRAP" in ik:
+            log.warning("skipping warm fetch for %s — run instruments refresh", sym)
+            continue
 
         df = mgr.rolling_cache.get(sym)
         if df is None or df.empty:

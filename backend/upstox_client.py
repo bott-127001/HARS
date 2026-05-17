@@ -16,6 +16,8 @@ from backend.data_manager import mgr as data_mgr_singleton
 
 log = logging.getLogger(__name__)
 
+INSTRUMENTS_USER_AGENT = "HARS/1.0 (Compatible; Upstox API Client)"
+
 FEED_HARD_STOP = asyncio.Event()
 
 _client: httpx.AsyncClient | None = None
@@ -103,12 +105,40 @@ async def fetch_historical_candles(
     return candles
 
 
+def build_nifty50_equity_key_map(
+    rows: list[dict[str, Any]],
+    symbols: list[str],
+    aliases: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Map dashboard symbols to Upstox instrument_key (NSE EQ only)."""
+    aliases = aliases or {}
+    lookup = {sym: aliases.get(sym, sym) for sym in symbols}
+    want_trading = set(lookup.values())
+    by_trading: dict[str, str] = {}
+
+    for row in rows:
+        if row.get("segment") != "NSE_EQ" or row.get("instrument_type") != "EQ":
+            continue
+        tsym = row.get("trading_symbol") or row.get("tradingsymbol")
+        ik = row.get("instrument_key")
+        if not tsym or not ik or tsym not in want_trading:
+            continue
+        by_trading[tsym] = ik
+
+    out: dict[str, str] = {}
+    for sym, trad_sym in lookup.items():
+        key = by_trading.get(trad_sym)
+        if key:
+            out[sym] = key
+    return out
+
+
 async def download_instruments_json() -> list[dict[str, Any]]:
     """Download public BOD instruments JSON (gzip) for mapping symbols → instrument_key."""
     await _before_request()
     client = await get_client()
     url = settings.upstox_instruments_json_gz_url
-    resp = await client.get(url)
+    resp = await client.get(url, headers={"User-Agent": INSTRUMENTS_USER_AGENT})
     resp.raise_for_status()
     raw = gzip.decompress(resp.content)
     data = json.loads(raw.decode("utf-8"))
