@@ -1,0 +1,158 @@
+.hero {
+  margin: 16px 22px 0;
+  padding: 20px;
+
+  border: 1px solid var(--border);
+  border-radius: 10px;
+
+  background: var(--bg-card);
+}
+
+.banner {
+  color: var(--text-muted);
+
+  margin-bottom: 14px;
+
+
+}
+
+.marketClosedBanner {
+  color: var(--text-muted);
+
+
+  margin-bottom: 14px;
+
+}
+
+.feedError {
+  color: #ffb4b4;
+}
+
+.grid {
+  display: grid;
+
+
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+
+  gap: 16px;
+}
+
+.col {
+  min-width: 0;
+}
+
+.label {
+  color: var(--text-muted);
+  margin-bottom: 8px;
+
+
+}
+
+.value {
+  color: var(--text-primary);
+  font-size: 26px;
+
+
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+
+
+}
+
+.sub {
+
+
+  margin-top: 8px;
+
+
+  color: var(--text-muted);
+
+  font-size: 13px;
+
+
+}
+
+.regimeWrap {
+  display: flex;
+
+
+  align-items: center;
+
+  gap: 10px;
+
+
+  margin-top: 4px;
+
+
+}
+
+.pill {
+
+
+  display: inline-flex;
+  align-items: center;
+
+
+  padding: 6px 10px;
+
+
+  border-radius: 999px;
+  font-size: 13px;
+
+
+  white-space: nowrap;
+
+
+}
+
+.pillMuted {
+  background: var(--badge-pending);
+}
+
+.pillGrey {
+  background: #343d58;
+}
+
+
+.pillBlue {
+  background: rgba(59, 110, 248, 0.25);
+}
+
+
+.pillOrange {
+  background: rgba(247, 144, 9, 0.18);
+
+
+}
+
+@media (max-width: 768px) {
+  .hero {
+    margin: 10px 12px 0;
+    padding: 14px;
+  }
+
+  .grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .label {
+    font-size: 12px;
+    margin-bottom: 6px;
+  }
+
+  .value {
+    font-size: 18px;
+  }
+
+  .sub {
+    font-size: 11px;
+    margin-top: 6px;
+  }
+
+  .pill {
+    font-size: 11px;
+    padding: 4px 8px;
+  }
+}
