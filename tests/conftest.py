@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 os.environ.setdefault("JWT_SECRET", "test-secret-key-at-least-32-characters-long-ok")
+os.environ.setdefault("UPSTOX_ANALYTICS_TOKEN", "test-upstox-token")
 os.environ.setdefault("DASHBOARD_USERNAME", "testuser")
 os.environ.setdefault("DASHBOARD_PASSWORD", "testpass")
 os.environ.setdefault("MONGODB_URI", "mongodb://127.0.0.1:27017")

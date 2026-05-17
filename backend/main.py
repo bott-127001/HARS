@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from backend import db as db_layer
 from backend import upstox_client
 from backend.auth import create_access_token, require_auth
-from backend.config import settings
+from backend.config import missing_required_settings, settings
 from backend.data_manager import _parse_candles_to_df, mgr, trim_df
 from backend.market_time import now_ist, should_skip_precalc_jobs
 from backend.scan_service import compute_scan_rows
@@ -92,6 +92,11 @@ async def _warmup_bootstrap_cache() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    missing = missing_required_settings()
+    if missing:
+        raise RuntimeError(
+            "Missing required environment variables: " + ", ".join(missing)
+        )
     await db_layer.connect_mongo_with_retries()
     asyncio.create_task(_warmup_bootstrap_cache())
     start_scheduler()

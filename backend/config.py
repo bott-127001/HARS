@@ -38,3 +38,21 @@ def load_settings() -> Settings:
 
 
 settings = load_settings()
+
+_DEFAULT_JWT = "change-me-in-production-min-32-chars-xx"
+
+
+def missing_required_settings() -> list[str]:
+    """Env vars that must be set before running in production."""
+    missing: list[str] = []
+    if not settings.upstox_analytics_token:
+        missing.append("UPSTOX_ANALYTICS_TOKEN")
+    if not settings.dashboard_username:
+        missing.append("DASHBOARD_USERNAME")
+    if not settings.dashboard_password:
+        missing.append("DASHBOARD_PASSWORD")
+    if not settings.mongodb_uri:
+        missing.append("MONGODB_URI")
+    if not settings.jwt_secret or settings.jwt_secret == _DEFAULT_JWT:
+        missing.append("JWT_SECRET")
+    return missing
