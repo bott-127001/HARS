@@ -28,6 +28,17 @@
   color: #ffb4b4;
 }
 
+.lateStartBanner {
+  background: #2a1f00;
+  border-left: 3px solid #f0a500;
+  color: #f0c040;
+  padding: 10px 16px;
+  font-size: 13px;
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 14px;
+}
+
 .grid {
   display: grid;
 

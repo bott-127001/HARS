@@ -130,7 +130,11 @@ async def instruments_refresh() -> None:
     await mgr.reload_active_instruments()
 
 
-async def pre_market_job() -> None:
+async def pre_market_job(
+    *,
+    recovery: bool = False,
+    history_to_date: str | None = None,
+) -> None:
     mgr.market_closed_label = False
     if await should_skip_precalc_jobs():
         mgr.market_closed_label = True
@@ -138,6 +142,15 @@ async def pre_market_job() -> None:
         return
     if upstox_client.feed_is_halted():
         return
+
+    if recovery:
+        ist_now = datetime.now(IST)
+        log.warning(
+            "PRE-MARKET JOB MISSED — running recovery at %s",
+            ist_now.strftime("%Y-%m-%d %H:%M:%S %Z"),
+        )
+        mgr.late_start = True
+        mgr.late_start_date = ist_date_str(ist_now)
 
     mgr.cache_state = "WARMING_UP"
 
@@ -149,11 +162,12 @@ async def pre_market_job() -> None:
         stocks = [(s["symbol"], s["instrument_key"]) for s in mgr.active_stocks if s.get("active", True)]
 
         today_iso = datetime.now(IST).date().isoformat()
+        fetch_to = history_to_date if history_to_date is not None else today_iso
 
         horizon_start = (datetime.now(IST).date() - timedelta(days=30)).isoformat()
 
         async def load_series(ik: str, mongo_label: str) -> pd.DataFrame:
-            candles = await fetch_historical_candles(ik, "5minute", horizon_start, today_iso)
+            candles = await fetch_historical_candles(ik, "5minute", horizon_start, fetch_to)
 
             df = df_from_candles(candles)
 
@@ -250,6 +264,11 @@ async def pre_market_job() -> None:
         )
 
         mgr.last_updated = datetime.now(IST)
+
+        if recovery:
+            log.warning(
+                "HURST computed late — values valid but session started after scheduled window"
+            )
 
 
 async def market_open_gap_job() -> None:

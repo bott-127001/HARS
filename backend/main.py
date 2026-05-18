@@ -22,11 +22,12 @@ from backend import upstox_client
 from backend.auth import create_access_token, require_auth
 from backend.config import missing_required_settings, settings
 from backend.data_manager import _parse_candles_to_df, mgr, trim_df
-from backend.market_time import now_ist, should_skip_precalc_jobs
+from backend.market_time import ist_date_str, now_ist, prev_trading_date, should_skip_precalc_jobs
 from backend.scan_service import compute_scan_rows
 from backend.scheduler import (
     instruments_refresh,
     market_open_gap_job,
+    pre_market_job,
     shutdown_scheduler,
     start_scheduler,
 )
@@ -34,6 +35,63 @@ from backend.signal_tracker import pending_tracker
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
+
+
+async def _daily_session_premarket_complete() -> bool:
+    today = ist_date_str()
+    sess = await db_layer.get_daily_session(today)
+    if not sess:
+        return False
+    return sess.get("h_idx") is not None
+
+
+async def _run_premarket_recovery_if_needed() -> None:
+    """One-shot Job 0 recovery when server starts after 08:45 with no Hurst for today."""
+    if await _daily_session_premarket_complete():
+        return
+    if await should_skip_precalc_jobs():
+        return
+
+    ist_now = now_ist()
+    today = ist_date_str(ist_now)
+    open_845 = ist_now.replace(hour=8, minute=45, second=0, microsecond=0)
+    close_1530 = ist_now.replace(hour=15, minute=30, second=0, microsecond=0)
+
+    if ist_now <= open_845:
+        return
+
+    if ist_now >= close_1530:
+        log.warning(
+            "PRE-MARKET WINDOW MISSED AND MARKET CLOSED — no signal today. "
+            "Next run tomorrow at 08:45 IST."
+        )
+        mgr.regime = "UNKNOWN"
+        mgr.cache_state = "INSUFFICIENT"
+        await db_layer.upsert_daily_session(
+            {
+                "date": today,
+                "h_idx": None,
+                "h_vix": None,
+                "regime": "UNKNOWN",
+                "cache_state": "INSUFFICIENT",
+            },
+        )
+        return
+
+    holidays = await mgr.mongo_holiday_dates()
+    prev_td = prev_trading_date(today, holidays)
+    try:
+        await pre_market_job(recovery=True, history_to_date=prev_td)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("pre-market recovery failed: %s", exc)
+        return
+
+    cutoff918 = ist_now.replace(hour=9, minute=18, second=0, microsecond=0)
+    if ist_now > cutoff918:
+        try:
+            await market_open_gap_job()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("gap recovery failed: %s", exc)
 
 
 async def _warmup_bootstrap_cache() -> None:
@@ -46,6 +104,7 @@ async def _warmup_bootstrap_cache() -> None:
     await mgr.reload_active_instruments()
     await mgr.load_index_vix_from_mongo()
     await mgr.hydrate_from_daily_session_if_today()
+    await _run_premarket_recovery_if_needed()
     await pending_tracker.reload_from_db()
 
     ist_now = now_ist()

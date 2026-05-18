@@ -61,6 +61,8 @@ class DataManager:
     cache_state: str = "WARMING_UP"  # WARMING_UP | WARMING_UP_GAP | READY | INSUFFICIENT
     market_closed_label: bool = False
     data_feed_error: str | None = None
+    late_start: bool = False
+    late_start_date: str | None = None
     engine: HARSStrategyEngine = field(default_factory=HARSStrategyEngine)
 
     async def mongo_holiday_dates(self) -> set[str]:
@@ -259,6 +261,7 @@ class DataManager:
             "data_feed_error": self.data_feed_error,
             "cache_state": self.cache_state,
             "market_closed": self.market_closed_label,
+            "late_start": bool(self.late_start and self.late_start_date == ist_date_str()),
         }
         if persist_last_signal:
             self.last_signal = signal

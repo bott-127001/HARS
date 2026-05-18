@@ -89,9 +89,15 @@ export default function HeroStrip({ status }) {
 
   const marketClosed = Boolean(status?.market_closed)
   const sub = marketClosed ? 'Market Closed' : MDASH
+  const lateStart = Boolean(status?.late_start)
 
   return (
     <section className={styles.hero}>
+      {lateStart ? (
+        <div className={styles.lateStartBanner}>
+          ⚠ Pre-market window missed — Hurst computed late. Signals valid but treat with caution.
+        </div>
+      ) : null}
       {feedErr ? <div className={styles.feedError}>{status.data_feed_error}</div> : null}
       {!cacheReady && !feedErr ? <div className={styles.banner}>WARMING UP...</div> : null}
       {cacheReady && marketClosed ? (
