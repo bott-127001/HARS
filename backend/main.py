@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -184,8 +185,34 @@ async def admin_refresh_holidays(payload: HolidayPayload, _: None = Depends(requ
     return {"ok": True, "count": len(payload.dates)}
 
 
-dist_dir = Path(__file__).resolve().parents[1] / "frontend" / "dist"
+def _configure_frontend(app: FastAPI) -> None:
+    """Serve Vite build; client routes like /login need index.html fallback."""
+    dist_dir = Path(__file__).resolve().parents[1] / "frontend" / "dist"
+    index_html = dist_dir / "index.html"
 
-if dist_dir.exists():
+    if not index_html.is_file():
+        log.warning(
+            "frontend/dist/index.html missing — UI routes (/login, /dashboard) will 404. "
+            "Ensure build runs: cd frontend && npm ci && npm run build"
+        )
+        return
 
-    app.mount("/", StaticFiles(directory=str(dist_dir), html=True), name="static")
+    assets_dir = dist_dir / "assets"
+    if assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="frontend-assets")
+
+    @app.get("/", include_in_schema=False)
+    async def spa_root() -> FileResponse:
+        return FileResponse(index_html)
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str) -> FileResponse:
+        if full_path.startswith("api") or full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not Found")
+        candidate = dist_dir / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(index_html)
+
+
+_configure_frontend(app)
