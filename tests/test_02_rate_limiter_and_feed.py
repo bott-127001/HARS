@@ -169,7 +169,20 @@ async def test_401_sets_data_feed_error_and_halts(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.asyncio
-async def test_5minute_uses_v3_historical_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("interval", "path_part"),
+    [
+        ("1minute", "minutes/1/"),
+        ("5minute", "minutes/5/"),
+        ("30minute", "minutes/30/"),
+        ("day", "days/1/"),
+    ],
+)
+async def test_historical_candles_use_v3_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    interval: str,
+    path_part: str,
+) -> None:
     import backend.upstox_client as uc
 
     uc.reset_feed_halt()
@@ -186,15 +199,15 @@ async def test_5minute_uses_v3_historical_endpoint(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(uc, "get_client", AsyncMock(return_value=MagicMock(get=fake_get)))
 
     out = await uc.fetch_historical_candles(
-        "NSE_INDEX|Nifty 50",
-        "5minute",
+        "NSE_EQ|INE002A01018",
+        interval,
         "2026-05-04",
         "2026-05-18",
     )
     assert len(out) == 1
     assert "/v3/historical-candle/" in captured["url"]
-    assert "minutes/5/" in captured["url"]
-    assert "Nifty%2050" in captured["url"]
+    assert path_part in captured["url"]
+    assert "/v2/historical-candle/" not in captured["url"]
 
 
 @pytest.mark.asyncio

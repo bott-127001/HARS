@@ -2,7 +2,6 @@
 
 import asyncio
 import gzip
-import io
 import json
 import logging
 from typing import Any
@@ -57,12 +56,38 @@ async def _before_request() -> None:
     await rate_limiter.acquire()
 
 
-# V2 only supports 1minute/30minute/day/week/month; 5-minute bars use V3.
-_V3_MINUTE_INTERVALS: dict[str, int] = {"5minute": 5}
+def _v3_unit_interval(interval: str) -> tuple[str, int]:
+    """Map legacy interval strings to Upstox V3 path segments (unit, interval)."""
+    if interval.endswith("minute"):
+        try:
+            minutes = int(interval.removesuffix("minute"))
+        except ValueError as exc:
+            raise ValueError(f"Unsupported interval: {interval}") from exc
+        if not 1 <= minutes <= 300:
+            raise ValueError(f"Minute interval out of range (1-300): {minutes}")
+        return "minutes", minutes
+
+    fixed: dict[str, tuple[str, int]] = {
+        "day": ("days", 1),
+        "week": ("weeks", 1),
+        "month": ("months", 1),
+    }
+    if interval in fixed:
+        return fixed[interval]
+    raise ValueError(f"Unsupported interval: {interval}")
+
+
+def _v3_historical_url(instrument_key: str, interval: str, from_date_iso: str, to_date_iso: str) -> str:
+    ik = quote(instrument_key, safe="")
+    unit, iv = _v3_unit_interval(interval)
+    return (
+        f"{settings.upstox_api_base}/v3/historical-candle/"
+        f"{ik}/{unit}/{iv}/{to_date_iso}/{from_date_iso}"
+    )
 
 
 async def _parse_candle_response(resp: httpx.Response, instrument_key: str, url: str) -> list[list[Any]]:
-    """Shared handler for V2/V3 historical candle responses."""
+    """Shared handler for V3 historical candle responses."""
 
     async def halting_429() -> None:
         log.critical("Upstox 429 — halting upstream calls for 60s per rulebook §14")
@@ -113,22 +138,9 @@ async def fetch_historical_candles(
 
     await _before_request()
 
-    ik = quote(instrument_key, safe="")
+    url = _v3_historical_url(instrument_key, interval, from_date_iso, to_date_iso)
     headers = {"Authorization": f"Bearer {settings.upstox_analytics_token}", "Accept": "application/json"}
     client = await get_client()
-
-    minute_iv = _V3_MINUTE_INTERVALS.get(interval)
-    if minute_iv is not None:
-        url = (
-            f"{settings.upstox_api_base}/v3/historical-candle/"
-            f"{ik}/minutes/{minute_iv}/{to_date_iso}/{from_date_iso}"
-        )
-    else:
-        url = (
-            f"{settings.upstox_api_base}/v2/historical-candle/"
-            f"{ik}/{interval}/{to_date_iso}/{from_date_iso}"
-        )
-
     resp = await client.get(url, headers=headers)
     return await _parse_candle_response(resp, instrument_key, url)
 
