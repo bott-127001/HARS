@@ -41,6 +41,7 @@ export default function LiveScanTable() {
             <th>Gap%</th>
             <th>Momentum 15m</th>
             <th>Result</th>
+            <th>Signal Time</th>
           </tr>
         </thead>
         <tbody>
@@ -63,6 +64,10 @@ export default function LiveScanTable() {
               resTxt = 'WATCH'
             }
 
+            const sigTimeCls = result === 'SIGNAL' ? styles.resSignal : styles.resGrey
+            const sigTimeTxt =
+              result === 'SIGNAL' && r.signal_time ? String(r.signal_time) : MDASH
+
             return (
               <tr key={`${r.symbol}-${idx}`} className={zebra}>
                 <td>{r.symbol}</td>
@@ -71,6 +76,7 @@ export default function LiveScanTable() {
                 <td>{gp}</td>
                 <td>{mom}</td>
                 <td className={resCls}>{resTxt}</td>
+                <td className={sigTimeCls}>{sigTimeTxt}</td>
               </tr>
             )
           })}

@@ -482,6 +482,12 @@ async def candle_scan_job() -> None:
         pool = mgr.build_stock_engine_pool()
 
         signal = mgr.engine.get_signals(mgr.regime, pool)
+        signal_time: str | None = None
+        if signal:
+            from backend.signal_tracker import format_signal_time_ist
+
+            signal_time = format_signal_time_ist()
+            signal["signal_time"] = signal_time
 
         await mgr.update_prices_snapshot()
 
@@ -506,6 +512,8 @@ async def candle_scan_job() -> None:
                     stop_pct=float(signal["stop"]),
 
                     regime=mgr.regime,
+
+                    signal_time=signal_time,
 
                 )
 

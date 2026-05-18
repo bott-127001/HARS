@@ -288,3 +288,80 @@ class TestScanTableSortOrder:
         r1 = [r["symbol"] for r in compute_scan_rows(None)]
         r2 = [r["symbol"] for r in compute_scan_rows(None)]
         assert r1 == r2
+
+
+class TestSignalTime:
+    def setup_method(self) -> None:
+        mgr.regime = "MEAN_REVERTING"
+        mgr.cache_state = "READY"
+        mgr.gap_cache.clear()
+        mgr.rolling_cache.clear()
+        idx = pd.date_range("2026-05-18 09:00", periods=25, freq="5min")
+        mgr.active_stocks = [
+            {"symbol": "SIG", "active": True},
+            {"symbol": "W1", "active": True},
+            {"symbol": "D1", "active": True},
+        ]
+
+        def mk(sym: str, vol_last: float, gap_pct: float) -> pd.DataFrame:
+            closes = [100.0] * 22 + [100.05, 100.08, 100.12]
+            return pd.DataFrame(
+                {
+                    "open": closes,
+                    "high": [102.0] * 25,
+                    "low": [98.0] * 25,
+                    "close": closes,
+                    "volume": [1e6] * 24 + [vol_last],
+                },
+                index=idx,
+            )
+
+        mgr.rolling_cache["SIG"] = mk("SIG", 1.0e6, 0.0)
+        mgr.gap_cache["SIG"] = {"gap_pct": 0.0}
+        mgr.rolling_cache["W1"] = mk("W1", 3.5e6, 0.2)
+        mgr.gap_cache["W1"] = {"gap_pct": 0.2}
+        mgr.rolling_cache["D1"] = pd.DataFrame()
+        mgr.gap_cache["D1"] = {"gap_pct": 0.0}
+
+    def test_signal_time_populated_on_signal_row_only(self) -> None:
+        mgr.last_signal = {"symbol": "SIG", "signal_time": "09:25 IST"}
+        rows = compute_scan_rows("SIG")
+        by_sym = {r["symbol"]: r for r in rows}
+        assert by_sym["SIG"]["result"] == "SIGNAL"
+        assert by_sym["SIG"]["signal_time"] == "09:25 IST"
+        assert by_sym["W1"]["signal_time"] is None
+        assert by_sym["D1"]["signal_time"] is None
+
+    def test_signal_time_none_when_no_signal_exists(self) -> None:
+        mgr.last_signal = None
+        rows = compute_scan_rows(None)
+        assert all(r["signal_time"] is None for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_signal_time_survives_restart(fake_db: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.signal_tracker import PendingSignalTracker
+
+    monkeypatch.setattr("backend.signal_tracker._today_str", lambda: "2026-05-18")
+    coll = fake_db["pending_signals"]
+    await coll.insert_one(
+        {
+            "date": "2026-05-18",
+            "symbol": "SIG",
+            "direction": "LONG",
+            "entry": 100.0,
+            "target_pct": 1.5,
+            "stop_pct": 1.0,
+            "tp_price": 101.5,
+            "sl_price": 99.0,
+            "regime": "MEAN_REVERTING",
+            "status": "PENDING",
+            "signal_time": "09:25 IST",
+        },
+    )
+    mgr.last_signal = None
+    tr = PendingSignalTracker()
+    await tr.reload_from_db()
+    assert mgr.last_signal is not None
+    assert mgr.last_signal["symbol"] == "SIG"
+    assert mgr.last_signal["signal_time"] == "09:25 IST"

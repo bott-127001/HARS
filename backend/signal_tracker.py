@@ -18,6 +18,16 @@ def _today_str() -> str:
     return datetime.now(IST).date().isoformat()
 
 
+def format_signal_time_ist(dt: datetime | None = None) -> str:
+    """Current IST clock time for scan table, e.g. ``09:25 IST``."""
+    n = dt or datetime.now(IST)
+    if n.tzinfo is None:
+        n = IST.localize(n)
+    else:
+        n = n.astimezone(IST)
+    return f"{n.strftime('%H:%M')} IST"
+
+
 def trade_status(entry: float, exit_price: float) -> str:
     if exit_price > entry:
         return "WIN"
@@ -32,11 +42,20 @@ class PendingSignalTracker:
     in_memory: dict[str, Any] | None = None  # keyed by today's date iso
 
     async def reload_from_db(self) -> None:
+        from backend.data_manager import mgr
+
         today = _today_str()
         coll = db.get_db()["pending_signals"]
         doc = await coll.find_one({"date": today, "status": "PENDING"})
         async with self.lock:
             self.in_memory = dict(doc) if doc else None
+        if doc:
+            mgr.last_signal = {
+                "symbol": doc["symbol"],
+                "target": doc.get("target_pct"),
+                "stop": doc.get("stop_pct"),
+                "signal_time": doc.get("signal_time"),
+            }
 
     async def get_active(self) -> dict[str, Any] | None:
         async with self.lock:
@@ -52,6 +71,7 @@ class PendingSignalTracker:
         target_pct: float,
         stop_pct: float,
         regime: str,
+        signal_time: str | None = None,
     ) -> bool:
         today = _today_str()
         coll = db.get_db()["pending_signals"]
@@ -63,6 +83,7 @@ class PendingSignalTracker:
                 return False
             tp = entry_price * (1 + float(target_pct) / 100.0)
             sl = entry_price * (1 - float(stop_pct) / 100.0)
+            sig_time = signal_time or format_signal_time_ist()
 
             doc = {
                 "date": today,
@@ -75,6 +96,7 @@ class PendingSignalTracker:
                 "sl_price": sl,
                 "regime": regime,
                 "status": "PENDING",
+                "signal_time": sig_time,
                 "created_at": datetime.now(timezone.utc),
             }
 

@@ -22,6 +22,12 @@ def compute_scan_rows(symbol_signal: str | None) -> list[dict[str, Any]]:
     ready = mgr.cache_ready_public()
     synd = sorted([x["symbol"] for x in mgr.active_stocks if x.get("active", True)])
 
+    last_signal_time = (
+        mgr.last_signal.get("signal_time")
+        if isinstance(mgr.last_signal, dict)
+        else None
+    )
+
     if not ready:
         return [
             {
@@ -32,6 +38,7 @@ def compute_scan_rows(symbol_signal: str | None) -> list[dict[str, Any]]:
                 "momentum_15m": None,
                 "compliance_score": None,
                 "result": "—",
+                "signal_time": None,
             }
             for sym in synd
         ]
@@ -113,6 +120,7 @@ def compute_scan_rows(symbol_signal: str | None) -> list[dict[str, Any]]:
                 "momentum_15m": _num(mom, True),
                 "compliance_score": score,
                 "result": result,
+                "signal_time": last_signal_time if result == "SIGNAL" else None,
             },
         )
 
