@@ -17,11 +17,10 @@ def _num(v: float | None, ready: bool) -> float | None:
 
 
 def compute_scan_rows(symbol_signal: str | None) -> list[dict[str, Any]]:
-    """`/api/scan` sorted by compliance (desc); pending uses null + em-dash semantics via API layer."""
+    """`/api/scan` rows: SIGNAL first, then WATCH (score/rvol), then em-dash; stable sort."""
 
     ready = mgr.cache_ready_public()
     synd = sorted([x["symbol"] for x in mgr.active_stocks if x.get("active", True)])
-    gap_ready = bool(mgr.gap_cache) and all(s in mgr.gap_cache for s in synd)
 
     if not ready:
         return [
@@ -83,7 +82,7 @@ def compute_scan_rows(symbol_signal: str | None) -> list[dict[str, Any]]:
         atr = atr_by_symbol.get(sym)
         rvol = rvol_by_symbol.get(sym)
         mom = mom_by_symbol.get(sym)
-        gp = float(mgr.gap_cache[sym]["gap_pct"]) if gap_ready and sym in mgr.gap_cache else None
+        gp = float(mgr.gap_cache[sym]["gap_pct"]) if sym in mgr.gap_cache else None
 
         score = 0
 
@@ -117,6 +116,24 @@ def compute_scan_rows(symbol_signal: str | None) -> list[dict[str, Any]]:
             },
         )
 
-    rows_out.sort(key=lambda x: (-x["compliance_score"], -(x["rvol"] if x["rvol"] is not None else -1)))
+    def _sort_rank(res: str) -> int:
+        if res == "SIGNAL":
+            return 0
+        if res == "WATCH":
+            return 1
+        return 2
+
+    def _rvol_tiebreak(rvol_val: float | None) -> float:
+        if rvol_val is None:
+            return float("inf")
+        return -float(rvol_val)
+
+    rows_out.sort(
+        key=lambda r: (
+            _sort_rank(r["result"]),
+            -r["compliance_score"],
+            _rvol_tiebreak(r["rvol"]),
+        ),
+    )
 
     return rows_out

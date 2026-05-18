@@ -62,7 +62,7 @@ class DataManager:
     market_closed_label: bool = False
     data_feed_error: str | None = None
     late_start: bool = False
-    late_start_date: str | None = None
+    late_start_date: str | None = None  # Hurst or gap recovery flagged today → /api/status late_start
     engine: HARSStrategyEngine = field(default_factory=HARSStrategyEngine)
 
     async def mongo_holiday_dates(self) -> set[str]:

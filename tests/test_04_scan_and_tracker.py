@@ -151,3 +151,140 @@ def test_momentum_15m_formula() -> None:
     prices = pd.Series([100.0, 101.0, 102.0, 103.0])
     mom = (prices.iloc[-1] / prices.iloc[-3] - 1.0) * 100.0
     assert abs(mom - 1.9801980198019802) < 1e-6
+
+
+class TestScanTableSortOrder:
+    """Fixed priority: SIGNAL, then WATCH (score desc, rvol desc), then dash rows."""
+
+    def setup_method(self) -> None:
+        mgr.regime = "MEAN_REVERTING"
+        mgr.cache_state = "READY"
+        mgr.gap_cache.clear()
+        mgr.rolling_cache.clear()
+
+    def test_signal_row_first_despite_lower_compliance(self) -> None:
+        idx = pd.date_range("2026-05-18 09:00", periods=25, freq="5min")
+        base_hi = 102.0
+        base_lo = 98.0
+
+        def mk_frame(vol_last: float, close_last: float, gap_pct: float) -> pd.DataFrame:
+            closes = [100.0] * 22 + [100.05, 100.08, close_last]
+            return pd.DataFrame(
+                {
+                    "open": closes,
+                    "high": [base_hi] * 25,
+                    "low": [base_lo] * 25,
+                    "close": closes,
+                    "volume": [1e6] * 24 + [vol_last],
+                },
+                index=idx,
+            )
+
+        mgr.active_stocks = [{"symbol": "AAA", "active": True}, {"symbol": "ZZZ", "active": True}]
+        mgr.rolling_cache["AAA"] = mk_frame(5.0 * 1e6, 100.25, 0.5)
+        mgr.gap_cache["AAA"] = {"gap_pct": 0.5}
+        mgr.rolling_cache["ZZZ"] = mk_frame(1.0 * 1e6, 100.1, 0.0)
+        mgr.gap_cache["ZZZ"] = {"gap_pct": 0.0}
+
+        rows = compute_scan_rows("ZZZ")
+        assert rows[0]["result"] == "SIGNAL"
+        assert rows[0]["symbol"] == "ZZZ"
+        assert rows[1]["result"] == "WATCH"
+        assert rows[1]["symbol"] == "AAA"
+        assert rows[0]["compliance_score"] < rows[1]["compliance_score"]
+
+    def test_watch_rows_before_dash_rows(self) -> None:
+        idx = pd.date_range("2026-05-18 09:00", periods=25, freq="5min")
+        hi, lo = 102.0, 98.0
+
+        def mk(vol_last: float, gap_pct: float, close_tail: list[float]) -> pd.DataFrame:
+            return pd.DataFrame(
+                {
+                    "open": close_tail,
+                    "high": [hi] * 25,
+                    "low": [lo] * 25,
+                    "close": close_tail,
+                    "volume": [1e6] * 24 + [vol_last],
+                },
+                index=idx,
+            )
+
+        c_watch = [100.0] * 22 + [100.05, 100.08, 100.12]
+        mgr.active_stocks = [
+            {"symbol": "DA", "active": True},
+            {"symbol": "DB", "active": True},
+            {"symbol": "WA", "active": True},
+            {"symbol": "WB", "active": True},
+        ]
+        mgr.rolling_cache["WA"] = mk(3.5 * 1e6, 0.2, c_watch)
+        mgr.gap_cache["WA"] = {"gap_pct": 0.2}
+        mgr.rolling_cache["WB"] = mk(3.2 * 1e6, 0.2, c_watch)
+        mgr.gap_cache["WB"] = {"gap_pct": 0.2}
+        mgr.rolling_cache["DA"] = pd.DataFrame()
+        mgr.gap_cache["DA"] = {"gap_pct": 0.0}
+        mgr.rolling_cache["DB"] = pd.DataFrame()
+        mgr.gap_cache["DB"] = {"gap_pct": 0.0}
+
+        rows = compute_scan_rows(None)
+        results = [r["result"] for r in rows]
+        first_dash = next(i for i, r in enumerate(results) if r == "\u2014")
+        assert all(r == "WATCH" for r in results[:first_dash])
+        assert any(r == "—" for r in results[first_dash:])
+
+    def test_watch_sorted_by_score_then_rvol(self) -> None:
+        idx = pd.date_range("2026-05-18 09:00", periods=25, freq="5min")
+        hi, lo = 102.0, 98.0
+
+        def mk(vol_last: float, close_tail: list[float]) -> pd.DataFrame:
+            return pd.DataFrame(
+                {
+                    "open": close_tail,
+                    "high": [hi] * 25,
+                    "low": [lo] * 25,
+                    "close": close_tail,
+                    "volume": [1e6] * 24 + [vol_last],
+                },
+                index=idx,
+            )
+
+        c_hi_mom = [100.0] * 22 + [100.02, 100.05, 100.08]
+        c_lo_mom = [100.0] * 22 + [100.2, 100.25, 100.28]
+        mgr.active_stocks = [
+            {"symbol": "S2", "active": True},
+            {"symbol": "S3A", "active": True},
+            {"symbol": "S3B", "active": True},
+        ]
+        mgr.rolling_cache["S2"] = mk(2.5 * 1e6, c_hi_mom)
+        mgr.gap_cache["S2"] = {"gap_pct": 0.15}
+        mgr.rolling_cache["S3A"] = mk(4.0 * 1e6, c_lo_mom)
+        mgr.gap_cache["S3A"] = {"gap_pct": 0.2}
+        mgr.rolling_cache["S3B"] = mk(5.0 * 1e6, c_lo_mom)
+        mgr.gap_cache["S3B"] = {"gap_pct": 0.2}
+
+        rows = compute_scan_rows(None)
+        watch_rows = [r for r in rows if r["result"] == "WATCH"]
+        assert len(watch_rows) == 3
+        assert watch_rows[0]["compliance_score"] >= watch_rows[1]["compliance_score"] >= watch_rows[2]["compliance_score"]
+        assert watch_rows[0]["symbol"] == "S3B"
+        assert watch_rows[1]["symbol"] == "S3A"
+        assert watch_rows[2]["symbol"] == "S2"
+
+    def test_sort_stable_two_calls(self) -> None:
+        idx = pd.date_range("2026-05-18 09:00", periods=25, freq="5min")
+        mgr.active_stocks = [{"symbol": f"T{i}", "active": True} for i in range(5)]
+        for i in range(5):
+            sym = f"T{i}"
+            mgr.rolling_cache[sym] = pd.DataFrame(
+                {
+                    "open": [100.0] * 25,
+                    "high": [102.0] * 25,
+                    "low": [98.0] * 25,
+                    "close": [100.0 + 0.01 * i] * 25,
+                    "volume": [1e6] * 24 + [(2.5 + 0.1 * i) * 1e6],
+                },
+                index=idx,
+            )
+            mgr.gap_cache[sym] = {"gap_pct": 0.1 if i % 2 == 0 else 0.0}
+        r1 = [r["symbol"] for r in compute_scan_rows(None)]
+        r2 = [r["symbol"] for r in compute_scan_rows(None)]
+        assert r1 == r2

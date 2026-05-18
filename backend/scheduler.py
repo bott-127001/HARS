@@ -337,6 +337,43 @@ async def market_open_gap_job() -> None:
     )
 
 
+async def ensure_gap_if_incomplete() -> None:
+    """Backfill gap_cache if 09:18 job was missed (late start / restart); mirrors Hurst recovery pattern."""
+    if await should_skip_precalc_jobs():
+        return
+    if upstox_client.feed_is_halted():
+        return
+
+    ist_now = datetime.now(IST)
+    cutoff918 = ist_now.replace(hour=9, minute=18, second=0, microsecond=0)
+    close_1530 = ist_now.replace(hour=15, minute=30, second=0, microsecond=0)
+
+    if ist_now <= cutoff918 or ist_now >= close_1530:
+        return
+    if mgr.cache_state == "INSUFFICIENT":
+        return
+    if mgr.cache_state not in ("READY", "WARMING_UP_GAP"):
+        return
+
+    synd = [x["symbol"] for x in mgr.active_stocks if x.get("active", True)]
+    if not synd:
+        return
+    if all(s in mgr.gap_cache for s in synd):
+        return
+
+    log.warning(
+        "GAP FETCH MISSED AT 09:18 — running recovery at %s",
+        ist_now.strftime("%Y-%m-%d %H:%M:%S %Z"),
+    )
+    mgr.late_start = True
+    mgr.late_start_date = ist_date_str(ist_now)
+
+    try:
+        await market_open_gap_job()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("gap backfill failed: %s", exc)
+
+
 async def candle_scan_job() -> None:
 
     if not is_market_open():
@@ -351,6 +388,8 @@ async def candle_scan_job() -> None:
         return
 
     async with ENGINE_RUN_LOCK:
+
+        await ensure_gap_if_incomplete()
 
         today_iso = datetime.now(IST).date().isoformat()
 

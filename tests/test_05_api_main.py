@@ -149,8 +149,11 @@ def test_scan_ready_sort_and_signal(monkeypatch: pytest.MonkeyPatch, api_client:
     r = api_client.get("/api/scan", headers={"Authorization": f"Bearer {_token()}"})
     assert r.status_code == 200
     rows = r.json()
-    scores = [x["compliance_score"] for x in rows]
-    assert scores == sorted(scores, reverse=True)
+    assert rows[0]["result"] == "SIGNAL"
+    assert rows[0]["symbol"] == sig["symbol"]
+    rest = rows[1:]
+    scores_rest = [x["compliance_score"] for x in rest]
+    assert scores_rest == sorted(scores_rest, reverse=True)
     hit = [x for x in rows if x["result"] == "SIGNAL"]
     assert len(hit) == 1 and hit[0]["symbol"] == sig["symbol"]
 

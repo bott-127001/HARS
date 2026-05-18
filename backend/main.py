@@ -25,6 +25,7 @@ from backend.data_manager import _parse_candles_to_df, mgr, trim_df
 from backend.market_time import ist_date_str, now_ist, prev_trading_date, should_skip_precalc_jobs
 from backend.scan_service import compute_scan_rows
 from backend.scheduler import (
+    ensure_gap_if_incomplete,
     instruments_refresh,
     market_open_gap_job,
     pre_market_job,
@@ -105,6 +106,10 @@ async def _warmup_bootstrap_cache() -> None:
     await mgr.load_index_vix_from_mongo()
     await mgr.hydrate_from_daily_session_if_today()
     await _run_premarket_recovery_if_needed()
+    try:
+        await ensure_gap_if_incomplete()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("ensure_gap_if_incomplete during warmup failed: %s", exc)
     await pending_tracker.reload_from_db()
 
     ist_now = now_ist()
