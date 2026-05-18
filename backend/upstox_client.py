@@ -57,28 +57,18 @@ async def _before_request() -> None:
     await rate_limiter.acquire()
 
 
-async def fetch_historical_candles(
-    instrument_key: str,
-    interval: str,
-    from_date_iso: str,
-    to_date_iso: str,
-) -> list[list[Any]]:
-    """Return raw candle arrays from API or [] on recoverable empties."""
+# V2 only supports 1minute/30minute/day/week/month; 5-minute bars use V3.
+_V3_MINUTE_INTERVALS: dict[str, int] = {"5minute": 5}
+
+
+async def _parse_candle_response(resp: httpx.Response, instrument_key: str, url: str) -> list[list[Any]]:
+    """Shared handler for V2/V3 historical candle responses."""
 
     async def halting_429() -> None:
         log.critical("Upstox 429 — halting upstream calls for 60s per rulebook §14")
-
         FEED_HARD_STOP.set()
         await asyncio.sleep(60.0)
         FEED_HARD_STOP.clear()
-
-    await _before_request()
-
-    ik = quote(instrument_key, safe="")
-    url = f"{settings.upstox_api_base}/v2/historical-candle/{ik}/{interval}/{to_date_iso}/{from_date_iso}"
-    client = await get_client()
-    headers = {"Authorization": f"Bearer {settings.upstox_analytics_token}", "Accept": "application/json"}
-    resp = await client.get(url, headers=headers)
 
     await asyncio.sleep(0.2)  # stagger per rulebook (after response)
 
@@ -95,14 +85,52 @@ async def fetch_historical_candles(
         await halting_429()
         return []
 
+    if resp.status_code == 400:
+        log.warning(
+            "Upstox 400 for %s — %s (body=%s)",
+            instrument_key,
+            url,
+            (resp.text or "")[:200],
+        )
+        return []
+
     resp.raise_for_status()
     try:
         data_mgr_singleton.data_feed_error = None
     except Exception:  # noqa: BLE001
         pass
     payload = resp.json()
-    candles = (((payload or {}).get("data") or {}).get("candles")) or []
-    return candles
+    return (((payload or {}).get("data") or {}).get("candles")) or []
+
+
+async def fetch_historical_candles(
+    instrument_key: str,
+    interval: str,
+    from_date_iso: str,
+    to_date_iso: str,
+) -> list[list[Any]]:
+    """Return raw candle arrays from API or [] on recoverable empties."""
+
+    await _before_request()
+
+    ik = quote(instrument_key, safe="")
+    headers = {"Authorization": f"Bearer {settings.upstox_analytics_token}", "Accept": "application/json"}
+    client = await get_client()
+
+    minute_iv = _V3_MINUTE_INTERVALS.get(interval)
+    if minute_iv is not None:
+        url = (
+            f"{settings.upstox_api_base}/v3/historical-candle/"
+            f"{ik}/minutes/{minute_iv}/{to_date_iso}/{from_date_iso}"
+        )
+    else:
+        url = (
+            f"{settings.upstox_api_base}/v2/historical-candle/"
+            f"{ik}/{interval}/{to_date_iso}/{from_date_iso}"
+        )
+
+    resp = await client.get(url, headers=headers)
+    return await _parse_candle_response(resp, instrument_key, url)
 
 
 def build_nifty50_equity_key_map(

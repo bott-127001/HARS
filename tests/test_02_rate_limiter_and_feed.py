@@ -166,3 +166,53 @@ async def test_401_sets_data_feed_error_and_halts(monkeypatch: pytest.MonkeyPatc
 
     with pytest.raises(RuntimeError, match="halted"):
         await uc.fetch_historical_candles("NSE_EQ|Z", "5minute", "2026-01-01", "2026-01-02")
+
+
+@pytest.mark.asyncio
+async def test_5minute_uses_v3_historical_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    import backend.upstox_client as uc
+
+    uc.reset_feed_halt()
+    captured: dict[str, str] = {}
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"data": {"candles": [["t", 1, 2, 1, 1.5, 10, 0]]}}
+
+    async def fake_get(url: str, **_kw: Any) -> MagicMock:
+        captured["url"] = url
+        return mock_resp
+
+    monkeypatch.setattr(uc, "get_client", AsyncMock(return_value=MagicMock(get=fake_get)))
+
+    out = await uc.fetch_historical_candles(
+        "NSE_INDEX|Nifty 50",
+        "5minute",
+        "2026-05-04",
+        "2026-05-18",
+    )
+    assert len(out) == 1
+    assert "/v3/historical-candle/" in captured["url"]
+    assert "minutes/5/" in captured["url"]
+    assert "Nifty%2050" in captured["url"]
+
+
+@pytest.mark.asyncio
+async def test_400_returns_empty_without_crashing(monkeypatch: pytest.MonkeyPatch) -> None:
+    import backend.upstox_client as uc
+
+    uc.reset_feed_halt()
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 400
+    mock_resp.text = "bad request"
+
+    monkeypatch.setattr(uc, "get_client", AsyncMock(return_value=MagicMock(get=AsyncMock(return_value=mock_resp))))
+
+    out = await uc.fetch_historical_candles(
+        "NSE_INDEX|Nifty 50",
+        "5minute",
+        "2026-05-04",
+        "2026-05-18",
+    )
+    assert out == []
