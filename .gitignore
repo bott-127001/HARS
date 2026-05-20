@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# Secrets — use Render env vars, not git
+.env
+.env.*
+
+# Frontend build artifacts (built on deploy)
+frontend/node_modules/
+frontend/dist/
+
+# IDE / OS
+.cursor/
+.DS_Store
+Thumbs.db
