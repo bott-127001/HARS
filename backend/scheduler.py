@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import logging
 import os
 from datetime import datetime, timedelta
@@ -16,7 +17,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from backend import db
 from backend.constants import BOOTSTRAP_NIFTY50, INDEX_KEY, TRADING_SYMBOL_ALIASES, VIX_KEY
-from backend.data_manager import _parse_candles_to_df, mgr, trim_df
+from backend.data_manager import _parse_candles_to_df, append_merge_trim, mgr
 from backend.market_time import (
     candlescan_fire_valid,
     is_market_open,
@@ -59,6 +60,48 @@ def normalize_ts(ts: Any) -> datetime:
     if t.tzinfo is None:
         return IST.localize(t.to_pydatetime())
     return t.to_pydatetime().astimezone(IST)
+
+
+def _bar_ist_date(ts: Any) -> datetime.date:
+    return normalize_ts(ts).date()
+
+
+def _bar_ist_hm(ts: Any) -> str:
+    return normalize_ts(ts).strftime("%H:%M")
+
+
+def resolve_eod_exit_price(symbol: str, cache: pd.DataFrame | None, today_str: str) -> float | None:
+    """Pick today's 15:10 close, or latest bar before 15:10, or None if no today bars."""
+    if cache is None or cache.empty:
+        return None
+
+    exit_price: float | None = None
+    for ts, row in cache.iloc[::-1].iterrows():
+        bar_date = _bar_ist_date(ts).isoformat()
+        bar_time = _bar_ist_hm(ts)
+        if bar_date != today_str:
+            continue
+        if bar_time == "15:10":
+            exit_price = float(row["close"])
+            log.info("[EOD] Using 15:10 bar for %s: %s", symbol, exit_price)
+            break
+        if bar_time < "15:10":
+            exit_price = float(row["close"])
+            log.warning(
+                "[EOD] 15:10 bar not found for %s — using latest available bar at %s: %s",
+                symbol,
+                bar_time,
+                exit_price,
+            )
+            break
+
+    if exit_price is None:
+        log.critical(
+            "[EOD] No today's bars found in cache for %s. "
+            "Cannot determine exit price. Writing EOD with exit_price=null.",
+            symbol,
+        )
+    return exit_price
 
 
 def select_last_closed_5m(now_ist: datetime, candles: list[list[Any]]) -> list[Any] | None:
@@ -175,8 +218,9 @@ async def pre_market_job(
                 return pd.DataFrame()
 
             merged = merge_unique_by_time(None, df)
-
-            return trim_df(merged, 500)
+            out = merged.tail(500)
+            del merged, df
+            return out
 
         nifty_df = await load_series(INDEX_KEY, "NIFTY")
 
@@ -197,7 +241,9 @@ async def pre_market_job(
                 mgr.rolling_cache[sym] = pd.DataFrame()
 
                 continue
-            mgr.rolling_cache[sym] = trim_df(merge_unique_by_time(None, sdf), 25)
+            merged = merge_unique_by_time(None, sdf)
+            mgr.rolling_cache[sym] = merged.tail(25)
+            del merged, sdf
 
         idx_len = len(mgr.rolling_cache.get(INDEX_KEY, pd.DataFrame()))
 
@@ -227,10 +273,11 @@ async def pre_market_job(
 
             return
 
-        idx_returns = nifty_df["close"].astype(float).pct_change().dropna().values
-        vix_returns = vix_df["close"].astype(float).pct_change().dropna().values
-
-        regime_label, h_i, h_v = mgr.engine.classify_regime(idx_returns, vix_returns)
+        idx_rets = mgr.rolling_cache[INDEX_KEY]["close"].astype(float).pct_change().dropna().values
+        vix_rets = mgr.rolling_cache[VIX_KEY]["close"].astype(float).pct_change().dropna().values
+        regime_label, h_i, h_v = mgr.engine.classify_regime(idx_rets, vix_rets)
+        del idx_rets, vix_rets
+        gc.collect()
 
         if np.isnan(h_i) or np.isnan(h_v):
             mgr.regime = "UNKNOWN"
@@ -432,10 +479,9 @@ async def candle_scan_job() -> None:
                 index=[ts],
             )
 
-            merged = trim_df(merge_unique_by_time(mgr.rolling_cache.get(ik), new_df), 500)
-
+            merged = append_merge_trim(mgr.rolling_cache.get(ik), new_df, 500)
             mgr.rolling_cache[ik] = merged
-
+            log.debug("%s cache len: %s", ik, len(mgr.rolling_cache[ik]))
             await mgr.persist_index_vix_rows(ik, mongo_label, merged)
 
         await update_index_series(INDEX_KEY, "NIFTY")
@@ -475,9 +521,9 @@ async def candle_scan_job() -> None:
 
             sym = s["symbol"]
 
-            merged = trim_df(merge_unique_by_time(mgr.rolling_cache.get(sym), new_df), 25)
-
+            merged = append_merge_trim(mgr.rolling_cache.get(sym), new_df, 25)
             mgr.rolling_cache[sym] = merged
+            log.debug("%s cache len: %s", sym, len(mgr.rolling_cache[sym]))
 
         pool = mgr.build_stock_engine_pool()
 
@@ -498,24 +544,49 @@ async def candle_scan_job() -> None:
         mgr.api_status_snapshot(signal=signal, persist_last_signal=True)
 
         if signal and mgr.regime not in ("NO_TRADE", "UNKNOWN"):
-            df_sym = mgr.rolling_cache.get(signal["symbol"])
+            df_sym = mgr.get_stock_cache(signal["symbol"])
             if df_sym is None or df_sym.empty:
-                log.error("Signal without price dataframe for %s", signal["symbol"])
-            else:
-                entry_px = float(df_sym["close"].iloc[-1])
-                await pending_tracker.try_create_pending(
-                    symbol=signal["symbol"],
-                    entry_price=entry_px,
-
-                    target_pct=float(signal["target"]),
-
-                    stop_pct=float(signal["stop"]),
-
-                    regime=mgr.regime,
-
-                    signal_time=signal_time,
-
+                log.warning(
+                    "[SIGNAL] No cache data for %s — cannot determine entry price. Signal discarded.",
+                    signal["symbol"],
                 )
+            else:
+                last_bar = df_sym.iloc[-1]
+                bar_ts = last_bar.name
+                last_bar_date = (
+                    bar_ts.date() if hasattr(bar_ts, "date") else pd.Timestamp(bar_ts).date()
+                )
+                today_ist = datetime.now(IST).date()
+
+                if last_bar_date != today_ist:
+                    log.warning(
+                        "[SIGNAL] Entry bar for %s is stale — bar date %s != today %s. "
+                        "Signal discarded. Will retry next candle cycle.",
+                        signal["symbol"],
+                        last_bar_date,
+                        today_ist,
+                    )
+                else:
+                    entry_px = float(last_bar["close"])
+                    log.info(
+                        "[SIGNAL] Entry confirmed — %s | bar_time: %s | entry: %.2f",
+                        signal["symbol"],
+                        bar_ts,
+                        entry_px,
+                    )
+                    await pending_tracker.try_create_pending(
+                        symbol=signal["symbol"],
+                        entry_price=entry_px,
+
+                        target_pct=float(signal["target"]),
+
+                        stop_pct=float(signal["stop"]),
+
+                        regime=mgr.regime,
+
+                        signal_time=signal_time,
+
+                    )
 
 
 async def tp_sl_job() -> None:
@@ -535,36 +606,62 @@ async def tp_sl_job() -> None:
 
         return
 
-    df = mgr.rolling_cache.get(ps["symbol"])
+    symbol = ps["symbol"]
+    df = mgr.get_stock_cache(symbol)
 
     if df is None or df.empty:
         return
-    px = float(df["close"].iloc[-1])
+
+    last_bar = df.iloc[-1]
+    today_ist = now.date()
+
+    if _bar_ist_date(df.index[-1]) != today_ist:
+        log.warning(
+            "[TP_SL] Stale bar in cache for %s — bar date %s != today %s. "
+            "Skipping TP/SL check this cycle.",
+            symbol,
+            _bar_ist_date(df.index[-1]),
+            today_ist,
+        )
+        return
+
+    current_price = float(last_bar["close"])
+    bar_time = _bar_ist_hm(df.index[-1])
 
     entry = float(ps["entry"])
-
     tgt = float(ps["target_pct"])
-
     stp = float(ps["stop_pct"])
+    tp_price = float(ps["tp_price"])
+    sl_price = float(ps["sl_price"])
 
-    if px >= entry * (1 + tgt / 100):
+    log.info(
+        "[TP_SL] %s | bar_time: %s | current: %.2f | entry: %.2f | tp: %.2f | sl: %.2f",
+        symbol,
+        bar_time,
+        current_price,
+        entry,
+        tp_price,
+        sl_price,
+    )
+
+    if current_price >= entry * (1 + tgt / 100):
 
         await pending_tracker.settle_trade(
             outcome="TP_HIT",
 
-            exit_price=px,
+            exit_price=current_price,
 
-            status_result=trade_status(entry, px),
+            status_result=trade_status(entry, current_price),
         )
 
-    elif px <= entry * (1 - stp / 100):
+    elif current_price <= entry * (1 - stp / 100):
 
         await pending_tracker.settle_trade(
             outcome="SL_HIT",
 
-            exit_price=px,
+            exit_price=current_price,
 
-            status_result=trade_status(entry, px),
+            status_result=trade_status(entry, current_price),
         )
 
 
@@ -572,26 +669,37 @@ async def eod_settle_job() -> None:
 
     if await should_skip_precalc_jobs():
         return
-    ps = await pending_tracker.get_active()
+    try:
+        ps = await pending_tracker.get_active()
 
-    today = ist_date_str()
+        today = ist_date_str()
 
-    if ps:
-        df = mgr.rolling_cache.get(ps["symbol"])
+        if ps:
+            symbol = ps["symbol"]
+            cache = mgr.get_stock_cache(symbol)
+            exit_price = resolve_eod_exit_price(symbol, cache, today)
 
-        if df is None or df.empty:
-            log.warning("EOD settle missing cache for symbol %s", ps["symbol"])
+            entry = float(ps["entry"])
+            status_result = (
+                trade_status(entry, exit_price) if exit_price is not None else "BREAKEVEN"
+            )
+
+            await pending_tracker.settle_trade(
+                outcome="EOD",
+                exit_price=exit_price,
+                status_result=status_result,
+            )
             return
-        px = float(df["close"].iloc[-1])
 
-        entry = float(ps["entry"])
-
-        await pending_tracker.settle_trade(outcome="EOD", exit_price=px, status_result=trade_status(entry, px))
-
-        return
-
-    if mgr.regime in ("NO_TRADE", "UNKNOWN"):
-        await pending_tracker.write_no_trade_day(today)
+        if mgr.regime in ("NO_TRADE", "UNKNOWN"):
+            await pending_tracker.write_no_trade_day(today)
+    finally:
+        for key in list(mgr.rolling_cache.keys()):
+            if key not in (INDEX_KEY, VIX_KEY):
+                mgr.rolling_cache[key] = pd.DataFrame()
+        mgr.gap_cache.clear()
+        gc.collect()
+        log.info("[EOD] Cache cleared. Stock rolling_cache and gap_cache released.")
 
 
 async def quarterly_job() -> None:

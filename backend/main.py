@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import logging
+import os
 import secrets
+
+import psutil
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
@@ -21,7 +25,7 @@ from backend import db as db_layer
 from backend import upstox_client
 from backend.auth import create_access_token, require_auth
 from backend.config import missing_required_settings, settings
-from backend.data_manager import _parse_candles_to_df, mgr, trim_df
+from backend.data_manager import _parse_candles_to_df, mgr
 from backend.market_time import ist_date_str, now_ist, prev_trading_date, should_skip_precalc_jobs
 from backend.scan_service import compute_scan_rows
 from backend.scheduler import (
@@ -36,6 +40,22 @@ from backend.signal_tracker import pending_tracker
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
+
+
+async def memory_watchdog() -> None:
+    while True:
+        await asyncio.sleep(300)
+        process = psutil.Process(os.getpid())
+        mem_mb = process.memory_info().rss / 1024 / 1024
+        log.info("[MEMORY] RSS: %.1f MB", mem_mb)
+        if mem_mb > 400:
+            log.critical(
+                "[MEMORY] WARNING: %.1fMB — approaching 512MB limit. Forcing gc.collect().",
+                mem_mb,
+            )
+            gc.collect()
+            mem_mb_after = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
+            log.critical("[MEMORY] After gc: %.1fMB", mem_mb_after)
 
 
 async def _daily_session_premarket_complete() -> bool:
@@ -137,7 +157,8 @@ async def _warmup_bootstrap_cache() -> None:
                 )
                 sdf = _parse_candles_to_df(candles)
                 if sdf is not None and not sdf.empty:
-                    mgr.rolling_cache[sym] = trim_df(sdf, 25)
+                    mgr.rolling_cache[sym] = sdf.tail(25)
+                    del sdf
             except Exception as exc:  # noqa: BLE001
                 log.warning("stock warm fetch failed %s: %s", sym, exc)
 
@@ -167,6 +188,7 @@ async def lifespan(app: FastAPI):
         )
     await db_layer.connect_mongo_with_retries()
     asyncio.create_task(_warmup_bootstrap_cache())
+    asyncio.create_task(memory_watchdog())
     start_scheduler()
     yield
     shutdown_scheduler()

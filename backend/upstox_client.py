@@ -32,9 +32,15 @@ def reset_feed_halt() -> None:
 
 async def get_client() -> httpx.AsyncClient:
     global _client
-    if _client is None:
-        timeout = httpx.Timeout(connect=30.0, read=60.0, write=30.0, pool=None)
-        _client = httpx.AsyncClient(timeout=timeout, follow_redirects=True)
+    if _client is None or _client.is_closed:
+        _client = httpx.AsyncClient(
+            timeout=30.0,
+            limits=httpx.Limits(
+                max_connections=5,
+                max_keepalive_connections=2,
+                keepalive_expiry=10,
+            ),
+        )
     return _client
 
 

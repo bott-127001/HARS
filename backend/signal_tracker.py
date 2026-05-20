@@ -108,7 +108,7 @@ class PendingSignalTracker:
         self,
         *,
         outcome: str,
-        exit_price: float,
+        exit_price: float | None,
         status_result: str,
     ) -> None:
         ps = await self.get_active()
@@ -123,7 +123,7 @@ class PendingSignalTracker:
             "entry": ps["entry"],
             "tp": ps["tp_price"],
             "sl": ps["sl_price"],
-            "exit_price": float(exit_price),
+            "exit_price": (float(exit_price) if exit_price is not None else None),
             "regime": ps.get("regime"),
             "outcome": outcome,
             "status": status_result,

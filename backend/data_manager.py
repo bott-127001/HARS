@@ -40,9 +40,33 @@ def _parse_candles_to_df(candles: list[list[Any]]) -> pd.DataFrame | None:
 
 
 def trim_df(df: pd.DataFrame, max_rows: int) -> pd.DataFrame:
-    if len(df) <= max_rows:
-        return df
-    return df.iloc[-max_rows:].copy()
+    """Keep the last ``max_rows`` rows via ``.tail()`` (bounded memory)."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    return df.tail(max_rows)
+
+
+def append_merge_trim(
+    existing: pd.DataFrame | None,
+    new_df: pd.DataFrame | None,
+    max_rows: int,
+) -> pd.DataFrame:
+    """Merge by time, trim immediately, and release the pre-trim concat buffer."""
+    if new_df is None or new_df.empty:
+        if existing is None or existing.empty:
+            return pd.DataFrame()
+        return existing.tail(max_rows)
+    if existing is None or existing.empty:
+        df = new_df
+        out = df.tail(max_rows)
+        del df
+        return out
+    df = pd.concat([existing, new_df])
+    df = df[~df.index.duplicated(keep="last")]
+    df.sort_index(inplace=True)
+    out = df.tail(max_rows)
+    del df
+    return out
 
 
 @dataclass
@@ -75,6 +99,10 @@ class DataManager:
     def cache_ready_public(self) -> bool:
         return self.cache_state == "READY"
 
+    def get_stock_cache(self, symbol: str) -> pd.DataFrame | None:
+        """Single entry point for stock cache lookup (keyed by symbol string)."""
+        return self.rolling_cache.get(symbol)
+
     async def reload_active_instruments(self) -> None:
         coll = db.get_db()["instruments"]
         curs = coll.find({"active": True}).sort("symbol", 1)
@@ -104,18 +132,29 @@ class DataManager:
             await coll.insert_many(docs)
 
     async def load_index_vix_from_mongo(self) -> None:
+        coll = db.get_db()["candle_cache"]
         for key in (INDEX_KEY, VIX_KEY):
-            cur = db.get_db()["candle_cache"].find({"instrument_key": key}).sort("timestamp", 1)
-            rows = []
-            async for d in cur:
-                ts = pd.to_datetime(d["timestamp"])
-                rows.append({"timestamp": ts, "open": d["open"], "high": d["high"], "low": d["low"], "close": d["close"], "volume": d["volume"]})
+            cur = coll.find({"instrument_key": key}).sort("timestamp", 1).limit(500)
+            rows: list[dict[str, Any]] = []
+            ts_list: list[Any] = []
+            async for doc in cur:
+                ts_list.append(pd.to_datetime(doc["timestamp"]))
+                rows.append(
+                    {
+                        "open": float(doc["open"]),
+                        "high": float(doc["high"]),
+                        "low": float(doc["low"]),
+                        "close": float(doc["close"]),
+                        "volume": float(doc["volume"]),
+                    },
+                )
             if rows:
-                df = pd.DataFrame(rows)
-                df.set_index(pd.DatetimeIndex(df["timestamp"]), inplace=True)
+                df = pd.DataFrame(rows, dtype="float32")
+                df.index = pd.DatetimeIndex(ts_list)
                 df.sort_index(inplace=True)
-                df.drop(columns=["timestamp"], inplace=True, errors="ignore")
-                self.rolling_cache[key] = trim_df(df, 500)
+                del rows, ts_list
+                self.rolling_cache[key] = df.tail(500)
+                del df
             elif key not in self.rolling_cache:
                 self.rolling_cache[key] = pd.DataFrame()
 
@@ -145,13 +184,13 @@ class DataManager:
 
     async def trim_mongo_cache_to_500(self, instrument_key: str) -> None:
         coll = db.get_db()["candle_cache"]
-        cur = coll.find({"instrument_key": instrument_key}).sort("timestamp", -1).limit(501)
-        extra = []
-        docs = await cur.to_list(length=501)
-        if len(docs) <= 500:
-            return
-        for d in docs[500:]:
-            extra.append(d["_id"])
+        cur = coll.find({"instrument_key": instrument_key}).sort("timestamp", -1)
+        extra: list[Any] = []
+        n = 0
+        async for doc in cur:
+            n += 1
+            if n > 500:
+                extra.append(doc["_id"])
         if extra:
             await coll.delete_many({"_id": {"$in": extra}})
 
