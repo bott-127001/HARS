@@ -217,8 +217,9 @@ async def login(form: OAuth2PasswordRequestForm = Depends()):
     return {"token": create_access_token()}
 
 
-@app.get("/api/health")
+@app.api_route("/api/health", methods=["GET", "HEAD"])
 async def health():
+    """GET/HEAD for Render health checks and UptimeRobot (HEAD by default)."""
     return {"status": "ok", "cache_ready": mgr.cache_ready_public()}
 
 

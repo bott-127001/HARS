@@ -44,6 +44,13 @@ def test_health_no_auth(api_client: TestClient) -> None:
     assert "cache_ready" in data and isinstance(data["cache_ready"], bool)
 
 
+def test_health_head_no_auth(api_client: TestClient) -> None:
+    """UptimeRobot and similar monitors often probe with HEAD."""
+    r = api_client.head("/api/health")
+    assert r.status_code == 200
+    assert r.content == b""
+
+
 def test_login_ok_and_jwt_12h(api_client: TestClient) -> None:
     from datetime import datetime, timezone
 
